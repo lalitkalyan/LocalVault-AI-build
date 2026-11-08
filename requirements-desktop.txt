@@ -1,0 +1,4 @@
+# Build-time dependencies for Local Chat.exe (server.py itself needs only the standard library).
+pyinstaller>=6.10,<7
+pywebview>=5.3,<7
+pillow>=10
