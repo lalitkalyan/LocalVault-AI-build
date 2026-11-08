@@ -156,8 +156,18 @@ class TestShortcutHelper(unittest.TestCase):
         self.assertIn('$AppUserModelId = "LocalChat.Desktop"', script)
         self.assertIn("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3", script)
         self.assertIn("key.pid = 5", script)
-        self.assertIn("file.Load(shortcutPath, 0)", script)
-        self.assertLess(script.find("file.Load(shortcutPath, 0)"), script.find("store.SetValue"))
+        self.assertNotIn("file.Load(shortcutPath, 0)", script)
+        self.assertIn("const uint STGM_READWRITE = 0x00000002;", script)
+        self.assertIn("const uint STGM_SHARE_DENY_NONE = 0x00000040;", script)
+        self.assertIn("file.Load(shortcutPath, STGM_READWRITE | STGM_SHARE_DENY_NONE)", script)
+        self.assertLess(
+            script.find("file.Load(shortcutPath, STGM_READWRITE | STGM_SHARE_DENY_NONE)"),
+            script.find("store.SetValue"))
+        self.assertLess(
+            script.find("WaitForPendingFinalizers"),
+            script.find("[LocalVault.ShortcutIcon]::SetAppUserModelId"))
+        self.assertIn('ExtendedProperty("System.AppUserModel.ID")', script)
+        self.assertIn("System.AppUserModel.ID was not stored", script)
         self.assertNotIn("SetPath", script)
         self.assertIn("$Link.TargetPath = $target", script)
         self.assertIn("$Link.Arguments = $arguments", script)

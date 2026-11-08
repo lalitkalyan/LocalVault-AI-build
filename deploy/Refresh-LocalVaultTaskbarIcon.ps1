@@ -13,6 +13,11 @@
   That is the same id desktop.py sets before it opens a window. The running
   window and the pin then share one taskbar button and the branded icon.
 
+  The property write opens the shortcut read-write. A read-only open makes
+  IPropertyStore.SetValue return STG_E_ACCESSDENIED (0x80030005). The script
+  also closes the icon-save handle before that open. It does not replace
+  Local Chat.exe. Re-run this script on an install that already has the icon.
+
   It does not create a shortcut you do not already have.
   It does not retarget a shortcut that points at python.exe or anything else.
   It does not rename or delete shortcuts.
@@ -49,10 +54,17 @@ using System.Runtime.InteropServices;
 
 namespace LocalVault {
     public static class ShortcutIcon {
+        // STGM_READ is 0. With no share flag, STGM_SHARE_EXCLUSIVE is assumed.
+        // IPropertyStore.SetValue returns STG_E_ACCESSDENIED (0x80030005) when
+        // that store is read-only. SHARE_DENY_NONE still allows a write if
+        // Explorer already has the .lnk open.
+        const uint STGM_READWRITE = 0x00000002;
+        const uint STGM_SHARE_DENY_NONE = 0x00000040;
+
         public static void SetAppUserModelId(string shortcutPath, string appId) {
             object link = new CShellLink();
             IPersistFile file = (IPersistFile)link;
-            file.Load(shortcutPath, 0);
+            file.Load(shortcutPath, STGM_READWRITE | STGM_SHARE_DENY_NONE);
             IPropertyStore store = (IPropertyStore)link;
             PROPERTYKEY key = new PROPERTYKEY();
             key.fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
@@ -115,6 +127,12 @@ namespace LocalVault {
 }
 '@
 
+function Release-ComObject {
+    param($Object)
+    if ($null -eq $Object) { return }
+    try { [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($Object) } catch { }
+}
+
 function Get-ShellLink {
     param([string]$LinkPath)
     $shell = New-Object -ComObject WScript.Shell
@@ -145,6 +163,26 @@ function Get-IconLocation {
     return "$ExePath,0"
 }
 
+function Get-ShortcutAppUserModelId {
+    param([string]$Path)
+    $shell = New-Object -ComObject Shell.Application
+    $folder = $null
+    $item = $null
+    try {
+        $folder = $shell.NameSpace((Split-Path -Parent $Path))
+        if ($null -eq $folder) { return $null }
+        $item = $folder.ParseName((Split-Path -Leaf $Path))
+        if ($null -eq $item) { return $null }
+        $value = $item.ExtendedProperty("System.AppUserModel.ID")
+        if ($null -eq $value) { return $null }
+        return [string]$value
+    } finally {
+        Release-ComObject $item
+        Release-ComObject $folder
+        Release-ComObject $shell
+    }
+}
+
 function Update-LocalChatShortcut {
     param($Link, [string]$Path, [string]$IconLocation)
     $target = $Link.TargetPath
@@ -166,9 +204,16 @@ function Update-LocalChatShortcut {
     $Link.Description = $description
     $Link.IconLocation = $IconLocation
     $Link.Save()
-    # Release the shell link before the property-store save opens the same file.
-    [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($Link)
+    # The WScript save keeps the .lnk open until the RCW is finalized. Close it
+    # before the read-write property-store open.
+    Release-ComObject $Link
+    [GC]::Collect()
+    [GC]::WaitForPendingFinalizers()
     [LocalVault.ShortcutIcon]::SetAppUserModelId($Path, $AppUserModelId)
+    $stored = Get-ShortcutAppUserModelId $Path
+    if ($stored -ne $AppUserModelId) {
+        throw "System.AppUserModel.ID was not stored on ${Path}. Read back '$stored'."
+    }
     $check = Get-ShellLink $Path
     if (-not (Same-Target $check.TargetPath $target)) {
         throw "Shortcut target changed unexpectedly: $Path"

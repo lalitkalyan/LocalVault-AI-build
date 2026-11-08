@@ -65,6 +65,8 @@ powershell -ExecutionPolicy Bypass -File .\deploy\Refresh-LocalVaultTaskbarIcon.
 
 The script only changes shortcuts whose target file is already `Local Chat.exe`. It writes the same target and arguments back, sets the icon to `icon.ico` (or `desktop_assets\icon.ico`, or `_internal\desktop_assets\icon.ico`) next to that program, and sets the shortcut's taskbar id to `LocalChat.Desktop`. A shortcut that points at `python.exe` is left alone. It does not delete shortcuts, it does not change `%LOCALAPPDATA%\LocalChat`, and it does not restart Explorer.
 
+Re-run the helper in a new PowerShell process after replacing this script. The installed `Local Chat.exe` does not need to be replaced for the shortcut id. The property is written with the shortcut opened read-write. A read-only open leaves Desktop and Start menu ids empty and returns `STG_E_ACCESSDENIED`.
+
 Windows can keep the old picture on a pin. If it still looks wrong, unpin that pin and pin `Local Chat.exe` again. The Edge fallback window, used only when the native window cannot start, keeps Edge's own icon.
 
 ## Firewall
