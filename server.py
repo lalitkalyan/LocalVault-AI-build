@@ -596,6 +596,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
 
     def _json(self, code, obj, extra_headers=None):
+        # Windows resets the TCP connection (WSAECONNABORTED / 10053) if a
+        # response is sent while a POST body is still unread. The phone must
+        # see the HTTP status, including 403, not a socket abort.
+        self._discard_unread_body()
         data = json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
@@ -606,10 +610,33 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _content_length(self):
+        try:
+            return int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _discard_unread_body(self):
+        if getattr(self, "_body_consumed", False):
+            return
+        self._body_consumed = True
+        remaining = self._content_length()
+        if remaining <= 0:
+            return
+        remaining = min(remaining, MAX_BODY)
+        while remaining > 0:
+            chunk = self.rfile.read(min(65536, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+
     def _body(self):
-        n = int(self.headers.get("Content-Length") or 0)
+        if getattr(self, "_body_consumed", False):
+            return b""
+        n = self._content_length()
         if n > MAX_BODY:
             raise ValueError("body too large")
+        self._body_consumed = True
         return self.rfile.read(n) if n else b""
 
     def _json_body(self):
