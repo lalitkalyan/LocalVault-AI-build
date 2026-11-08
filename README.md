@@ -146,6 +146,23 @@ Environment variables: `LOCALCHAT_DATA`, `LOCALCHAT_PYTHON` (the interpreter for
 - Requests with a foreign `Host` or `Origin`, and writes without a JSON content type, are rejected. Other websites in your browser can't use the local server or its code runner (this blocks CSRF and DNS rebinding). iPhone access adds a pairing cookie on top of those checks and does not allow `0.0.0.0` or a public address. The pairing code is not put in the URL or the log.
 - Your data lives in `./data/` (chats + settings) with `python server.py`, or in `%LOCALAPPDATA%\LocalChat\data\` with the desktop app. Delete that folder to wipe everything.
 
+## Reply recovery (v1.3)
+
+This is the first reliability release. It does not change code execution, web search ranking, or iPhone layout.
+
+- **Empty answer.** If a model finishes after thinking, or finishes with no answer text, the chat shows that and keeps your message. Nothing is sent again until you click. **Retry without reasoning** is shown when that reply had reasoning turned on. It sends the same prompt, attachments, and history with reasoning off for that one call. It does not add a second copy of your message.
+- **Stop.** The stop button aborts the browser request and the server closes the Ollama connection, so generation does not keep running in the background. Partial text stays, labelled as stopped. Stop is not a timeout and it does not start another reply.
+- **Time limits.** These are bounds, not speed claims. A local model can be quiet while it loads, so the first byte may take up to **180s** (`LOCALCHAT_FIRST_TOKEN_S`). After text is flowing, **90s** of silence ends the reply (`LOCALCHAT_IDLE_S`). One reply cannot run longer than **600s** (`LOCALCHAT_TOTAL_S`). The clock starts when the request is sent. Raising a value is how you allow a slower machine; the server refuses values below 0.2s and caps the cold-start wait at 1800s. A timeout keeps any partial text and offers **Retry**, which uses the same reasoning setting as the original request. Web search and code auto-run do not start again by themselves on that retry.
+- The window badge shows the server version (`v1.3`) so an installed build can be checked without opening the exe properties. The program file is still `Local Chat.exe`.
+
+### Check the install before judging replies
+
+Launch LocalVault AI with the app not already running, and without `--lan`. The window title should be LocalVault AI and the badge `v1.3`. Then open `http://127.0.0.1:8080/health` (or the port in the log if 8080 was busy). A ready server answers with `"ok": true` and `"version": "1.3"`.
+
+On the installed 1.2.0 build the window sometimes comes up and then never answers, even though port 8080 accepts a connection. One launch did that: no `GET` line in the log after `opening UI via webview`, and the window was not responding. The process later exited on its own. The same exe, launched once more with no `--lan` and with no code, settings, or firewall change, answered `GET /` (200) and `/health` (200), reported LAN off, and listed the installed models, with the window responding. That is an intermittent hang, not a failure of every launch. This release does not change startup to chase it, and it does not claim the hang is fixed. If it happens again, keep the log from `AppUserModelID` through `opening UI via webview`, and note whether a later launch of the same exe recovers without a code change.
+
+The automated smoke check only proves that `/health` answers after this server's listening socket accepts. It does not reproduce the desktop window on the MSI.
+
 ## Limitations
 
 - **The code runner is not a real sandbox.** It is a separate `python3 -I` process with a timeout, a temp working dir, a minimal environment, and (on macOS/Linux) CPU, memory, and file-size rlimits. The code still runs as your user and can read your files and use the network. Only run code you've read. On Windows only the timeout applies.
@@ -165,6 +182,7 @@ server.py        stdlib HTTP server: static files, Ollama proxy, chat store, /to
 lan.py            private-IPv4 discovery and in-memory pairing sessions (no tokens on disk)
 index.html       markup
 app.js           all UI logic (ES module)
+reliability.js   empty-answer, stop, and timeout decisions shared with tests
 style.css        pure black theme
 vendor/          marked 18.1.2 (MIT), pdf.js 6.4.299 legacy build (Apache-2.0)
 start.sh / start.bat

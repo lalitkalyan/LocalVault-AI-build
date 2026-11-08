@@ -26,10 +26,10 @@ if sys.platform == "win32":
     from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, StringStruct,
                                                      StringTable, VarFileInfo, VarStruct, VSVersionInfo)
     version_file = VSVersionInfo(
-        ffi=FixedFileInfo(filevers=(1, 2, 0, 0), prodvers=(1, 2, 0, 0)),
+        ffi=FixedFileInfo(filevers=(1, 3, 0, 0), prodvers=(1, 3, 0, 0)),
         kids=[StringFileInfo([StringTable("040904B0", [
             StringStruct("FileDescription", "LocalVault AI"), StringStruct("ProductName", "LocalVault AI"),
-            StringStruct("FileVersion", "1.2.0"), StringStruct("ProductVersion", "1.2.0"),
+            StringStruct("FileVersion", "1.3.0"), StringStruct("ProductVersion", "1.3.0"),
             StringStruct("OriginalFilename", "Local Chat.exe")])]),
             VarFileInfo([VarStruct("Translation", [1033, 1200])])])
 

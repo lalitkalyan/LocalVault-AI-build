@@ -90,7 +90,7 @@ class TestServerStandalone(Tmp):
         self.assertTrue(os.path.isfile(os.path.join(data, "chats", "abc.json")))
         p.send_signal(signal.SIGINT)
         out, _ = p.communicate(timeout=5)
-        self.assertIn("v1.2", out)
+        self.assertIn("v1.3", out)
         self.assertIn(data, out)
 
     def test_default_data_dir_is_next_to_server_py(self):

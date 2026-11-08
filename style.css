@@ -109,9 +109,11 @@ details.think .think-body{padding:2px 12px 10px;color:#9a9a9a;font-size:13.5px;w
 .notice code{font-size:12px}
 .cursor::after{content:"▍";animation:blink 1s steps(1) infinite;color:#888}
 @keyframes blink{50%{opacity:0}}
-.msg-actions{display:flex;gap:4px;margin-top:6px}
+.turn-note{margin-top:10px;color:#e6e6e6;font-size:13.5px;border-left:2px solid #e6e6e6;padding-left:10px}
+.msg-actions{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;align-items:center}
 .msg-actions button{background:none;border:0;color:var(--muted);font-size:12px;padding:2px 6px;border-radius:6px}
 .msg-actions button:hover{color:var(--text);background:var(--panel2)}
+.msg-actions button.recovery{border:1px solid var(--line2);color:#e6e6e6;padding:6px 10px}
 
 /* composer */
 #composerWrap{padding:8px 16px calc(16px + var(--safe-bottom) + var(--kb))}
@@ -166,6 +168,7 @@ input[type=range]{accent-color:#fff}
   #modelCaps{flex-basis:100%}
   .btn-icon{min-width:44px;min-height:44px}
   .btn-send{width:44px;height:44px}
+  .msg-actions button.recovery{min-height:44px;padding:10px 14px;font-size:14px}
   #topbar .toggle span,.toggle span{min-height:44px;display:inline-flex;align-items:center;padding:8px 12px;font-size:14px}
   #input,#sysPrompt,#pairCode,select,textarea{font-size:16px}
   .chat-item{min-height:44px}

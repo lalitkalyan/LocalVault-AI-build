@@ -39,7 +39,7 @@ class TestBrand(unittest.TestCase):
         self.assertEqual(desktop.APP_ID, "LocalChat")
         data = desktop.default_data_dir({"LOCALAPPDATA": r"C:\Users\Example\AppData\Local"}, windows=True)
         self.assertTrue(data.replace("\\", "/").endswith("LocalChat/data"))
-        self.assertEqual(server.VERSION, "1.2")
+        self.assertEqual(server.VERSION, "1.3")
         self.assertNotIn(RETIRED, server.__doc__ or "")
 
     def test_page_manifest_and_subtitle(self):
