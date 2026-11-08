@@ -1,0 +1,12 @@
+data/
+__pycache__/
+build/
+dist/
+.venv-build/
+desktop_assets/icon.png
+.env
+.env.*
+*.log
+*.db
+*.sqlite
+uploads/

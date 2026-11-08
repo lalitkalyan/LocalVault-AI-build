@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<meta name="format-detection" content="telephone=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="LocalVault AI">
+<meta name="application-name" content="LocalVault AI">
+<meta name="description" content="Your private, local AI assistant.">
+<title>LocalVault AI</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="pairScreen" class="pair-screen" hidden>
+  <div class="pair-card">
+    <h1>Pair this iPhone</h1>
+    <p class="muted small">LocalVault AI. Your private, local AI assistant.</p>
+    <p>Enter the code shown on the PC. Use the address from that screen, typed into Safari. The code is not part of the address.</p>
+    <label class="field-label" for="pairCode">Pairing code</label>
+    <input id="pairCode" inputmode="text" autocapitalize="characters" autocomplete="one-time-code" autocorrect="off" spellcheck="false" maxlength="16" enterkeyhint="go">
+    <button id="pairBtn" class="btn-primary" type="button">Connect</button>
+    <p id="pairError" class="pair-error" hidden></p>
+    <p class="muted small">Same Wi-Fi as the PC. Mobile data, a guest network, or a VPN will not reach it.</p>
+  </div>
+</div>
+<div id="app">
+  <aside id="sidebar">
+    <div class="side-top">
+      <button id="newChat" class="btn-new" title="New chat (Ctrl+Shift+O)">+ New chat</button>
+    </div>
+    <div class="side-label">Recent <span class="muted">· auto-deleted after 7 days</span></div>
+    <nav id="chatList"></nav>
+    <div class="side-bottom">
+      <button id="openLan" class="btn-ghost" type="button" hidden>iPhone</button>
+      <button id="openSettings" class="btn-ghost" type="button">Settings</button>
+      <span id="localBadge" class="muted small" title="Everything runs on this computer">● local</span>
+    </div>
+  </aside>
+
+  <main id="main">
+    <header id="topbar">
+      <button id="toggleSidebar" class="btn-icon" title="Toggle sidebar">☰</button>
+      <select id="modelSelect" title="Model"></select>
+      <label class="toggle" title="Auto-pick the best model for each message (chat / images / web / code)"><input type="checkbox" id="tAuto" checked><span>Auto</span></label>
+      <span id="modelCaps" class="muted small"></span>
+      <span class="spacer"></span>
+      <span id="status" class="muted small"></span>
+    </header>
+
+    <div id="banner" hidden></div>
+
+    <section id="messages">
+      <div id="empty" class="empty">
+        <div class="empty-title">What do you need?</div>
+        <div class="muted small">Your private, local AI assistant.</div>
+      </div>
+    </section>
+
+    <footer id="composerWrap">
+      <div id="composer">
+        <div id="attachments"></div>
+        <div class="input-row">
+          <button id="attachBtn" class="btn-icon" title="Attach image, PDF or text file">＋</button>
+          <input id="fileInput" type="file" multiple accept="image/*,.pdf,.txt,.md,.csv,.json,.py,.js,.ts,.html,.css,.log,.xml,.yaml,.yml">
+          <textarea id="input" rows="1" placeholder="Message… (Enter to send, Shift+Enter for newline, paste images)" enterkeyhint="send" autocapitalize="sentences" autocomplete="off"></textarea>
+          <button id="sendBtn" class="btn-send" title="Send">↑</button>
+        </div>
+        <div class="toggles">
+          <label class="toggle" title="Off = fully offline, no outbound requests"><input type="checkbox" id="tWeb"><span>Web</span></label>
+          <label class="toggle" title="Uses Ollama 'think' for models that support it"><input type="checkbox" id="tReason"><span>Reasoning</span></label>
+          <label class="toggle" title="Model can write Python; you can run it locally"><input type="checkbox" id="tCode"><span>Code</span></label>
+          <span class="spacer"></span>
+          <span id="hint" class="muted small"></span>
+        </div>
+      </div>
+    </footer>
+  </main>
+</div>
+
+<div id="settingsModal" class="modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head"><b>Settings</b><button id="closeSettings" class="btn-icon" title="Close">✕</button></div>
+    <label class="field-label" for="sysPrompt">System prompt</label>
+    <textarea id="sysPrompt" rows="7"></textarea>
+    <div class="row"><button id="resetPrompt" class="btn-ghost">Reset to default</button></div>
+    <label class="field-label" for="temperature">Temperature <span id="tempVal" class="muted"></span></label>
+    <input id="temperature" type="range" min="0" max="1.5" step="0.05">
+    <label class="check"><input type="checkbox" id="autoRun"> Auto-run the first Python block and feed the output back once (Code mode)</label>
+    <label class="check"><input type="checkbox" id="fetchPages"> Web: also read the top 2 pages (slower, better answers)</label>
+    <div class="row end">
+      <button id="clearAll" class="btn-danger">Delete all chats</button>
+      <span class="spacer"></span>
+      <button id="saveSettings" class="btn-primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="lanModal" class="modal" hidden>
+  <div class="modal-box lan-box">
+    <div class="modal-head"><b>iPhone on this Wi-Fi</b><button id="closeLan" class="btn-icon" type="button" title="Close">✕</button></div>
+    <div id="lanBody"></div>
+  </div>
+</div>
+
+<noscript><p class="noscript">LocalVault AI needs JavaScript. It is served by this PC, not loaded from the internet.</p></noscript>
+<script src="vendor/marked.umd.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
