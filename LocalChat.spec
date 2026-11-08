@@ -10,6 +10,8 @@ HERE = SPECPATH  # noqa: F821  (defined by PyInstaller)
 ONEFILE = os.environ.get("LOCALCHAT_ONEFILE") == "1"
 NAME = "Local Chat"  # exe filename. Window title comes from desktop.APP_NAME ("LocalVault AI").
 ICON = os.path.join(HERE, "desktop_assets", "icon.ico")
+if not os.path.isfile(ICON):
+    raise SystemExit(f"missing build input: {ICON}")
 
 datas = [(os.path.join(HERE, f), ".") for f in (
     "index.html", "app.js", "style.css", "favicon.svg", "apple-touch-icon.png",

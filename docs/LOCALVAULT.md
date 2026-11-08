@@ -46,11 +46,26 @@ powershell -ExecutionPolicy Bypass -File .\deploy\Rename-LocalVaultShortcuts.ps1
 powershell -ExecutionPolicy Bypass -File .\deploy\Rename-LocalVaultShortcuts.ps1
 ```
 
-It looks on the Desktop, in the Start menu, and in the taskbar pin folder. A shortcut is renamed from `Local Chat.lnk` to `LocalVault AI.lnk` only when its target file is already `Local Chat.exe`. The target, arguments, working directory, icon, and hotkey are written back unchanged.
+It looks on the Desktop, in the Start menu, and in the taskbar pin folder. A shortcut is renamed from `Local Chat.lnk` to `LocalVault AI.lnk` only when its target file is already `Local Chat.exe`. The target, arguments, working directory, icon, and hotkey are written back unchanged. It does not change the icon.
 
 If `LocalVault AI.lnk` is already in that folder and points at the same exe, only the old `Local Chat.lnk` is removed, so you do not get two icons. If `LocalVault AI.lnk` points somewhere else, both are left alone. The script does not create a shortcut you did not already have, and it does not rename the exe.
 
 A taskbar pin that Windows will not rename in place can be unpinned and pinned again from the same `Local Chat.exe`.
+
+## Taskbar icon
+
+The native window and `Local Chat.exe` use `desktop_assets\icon.ico`: a light chip on a black tile, the same black as the window. It is not a lock. Chats are still ordinary JSON. `build_exe.bat` also copies that file next to `Local Chat.exe` as `icon.ico`, which is the file a pinned shortcut should use.
+
+pywebview on Windows paints the Python icon unless the form is given this file before the window is shown. The program does that, and it sets the taskbar id `LocalChat.Desktop` before any window opens. An old pin does not pick that up by itself.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\Refresh-LocalVaultTaskbarIcon.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File .\deploy\Refresh-LocalVaultTaskbarIcon.ps1
+```
+
+The script only changes shortcuts whose target file is already `Local Chat.exe`. It writes the same target and arguments back, sets the icon to `icon.ico` (or `desktop_assets\icon.ico`, or `_internal\desktop_assets\icon.ico`) next to that program, and sets the shortcut's taskbar id to `LocalChat.Desktop`. A shortcut that points at `python.exe` is left alone. It does not delete shortcuts, it does not change `%LOCALAPPDATA%\LocalChat`, and it does not restart Explorer.
+
+Windows can keep the old picture on a pin. If it still looks wrong, unpin that pin and pin `Local Chat.exe` again. The Edge fallback window, used only when the native window cannot start, keeps Edge's own icon.
 
 ## Firewall
 

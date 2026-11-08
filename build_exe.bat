@@ -99,12 +99,21 @@ if not exist "%OUTEXE%" (
     echo [ERROR] Build finished but "%OUTEXE%" was not created.
     goto :fail
 )
+for %%I in ("%OUTEXE%") do set "OUTDIR=%%~dpI"
+copy /Y "desktop_assets\icon.ico" "%OUTDIR%icon.ico" >nul
+if errorlevel 1 (
+    echo [ERROR] Could not copy desktop_assets\icon.ico next to the program.
+    goto :fail
+)
 
 echo.
 echo ===========================================================================
 echo  Done: %CD%\%OUTEXE%
 echo.
 echo  The window title is LocalVault AI. The file name stays Local Chat.exe.
+echo  Taskbar icon copied to: %OUTDIR%icon.ico
+echo  If a pinned shortcut still shows the old picture, from this folder:
+echo    powershell -ExecutionPolicy Bypass -File "%~dp0deploy\Refresh-LocalVaultTaskbarIcon.ps1"
 echo  Chats stay in %LOCALAPPDATA%\LocalChat\data
 echo  To refresh Desktop and Start menu names without moving the program:
 echo    powershell -ExecutionPolicy Bypass -File "%~dp0deploy\Rename-LocalVaultShortcuts.ps1"

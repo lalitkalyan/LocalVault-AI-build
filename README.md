@@ -118,6 +118,7 @@ Environment variables: `LOCALCHAT_DATA`, `LOCALCHAT_PYTHON` (the interpreter for
   Set `LOCALCHAT_PYTHON` to choose one. It still runs as your user, as in v1.0.
 - Windowed apps have no console, so request logs and errors go to `localchat.log`. If the app doesn't open, check that file first.
 - Run from source without building: `python desktop.py` (needs `pip install pywebview` for the native window; otherwise it uses an Edge app window).
+- The native window and the exe use `desktop_assets/icon.ico` (a light chip on a black tile, not a lock). A pinned shortcut keeps the old picture until `deploy\Refresh-LocalVaultTaskbarIcon.ps1` points that shortcut at the icon. The script does not restart Explorer and does not delete other shortcuts. The Edge fallback window keeps Edge's icon.
 - Tests (they run on Linux/macOS/Windows): `python -m unittest discover -s tests -v`.
 - Windows SmartScreen may warn about an unsigned exe you built yourself: click **More info → Run anyway**.
 
@@ -173,14 +174,14 @@ desktop.py              v1.1 desktop launcher (Ollama start, in-process server, 
 build_exe.bat           Windows build script -> dist\Local Chat\Local Chat.exe
 LocalChat.spec          PyInstaller spec used by build_exe.bat
 requirements-desktop.txt  build-only deps (pyinstaller, pywebview, pillow)
-make_icon.py            generates desktop_assets/icon.ico (dark theme) with Pillow
-desktop_assets/icon.ico app icon
+make_icon.py            draws desktop_assets/icon.ico (16–256, BMP frames through 128)
+desktop_assets/icon.ico taskbar, window, and exe icon
 manifest.webmanifest    Home Screen name: LocalVault AI
 tests/test_desktop.py   tests for desktop.py and server.py
 tests/test_lan.py        pairing, auth boundaries, shutdown
 tests/test_brand.py      visible name, subtitle, and install-path compatibility
 docs/IPHONE.md           iPhone connection steps, troubleshooting, and the security limits
 docs/LOCALVAULT.md       Windows build and shortcut rename without moving data
-deploy/                  firewall, update, and shortcut scripts (Private profile, local subnet)
+deploy/                  firewall, update, shortcut rename, and taskbar-icon refresh
 Start-iPhone-Access.bat  starts the desktop app with iPhone access on
 ```

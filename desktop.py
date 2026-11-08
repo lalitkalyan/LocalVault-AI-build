@@ -10,8 +10,8 @@ Double-click flow (this is the entry point of `Local Chat.exe`):
   3. Run server.py's HTTP server in-process (background thread) on 127.0.0.1:8080.
      --lan also listens on this PC's private IPv4 addresses. A phone must enter a
      pairing code. Closing the window stops that listener and revokes phones.
-  4. Show the UI in a native window (pywebview + WebView2). Fallback: `msedge --app=...`,
-     then the default browser.
+  4. Show the UI in a native window (pywebview + WebView2) using desktop_assets/icon.ico.
+     Fallback: `msedge --app=...`, then the default browser. The Edge fallback keeps Edge's icon.
   5. When the last window closes: stop the server (and the Ollama we started, if any).
 
 Data lives in a per-user folder (%LOCALAPPDATA%\\LocalChat\\data on Windows), never next to the exe or
@@ -37,6 +37,9 @@ import urllib.request
 
 APP_NAME = "LocalVault AI"  # window title, dialogs, and the browser page. Not the exe name.
 APP_ID = "LocalChat"  # data folder. Do not rename; existing chats live under this id.
+# Taskbar identity. Shortcuts must use this same id. Do not add a version: an upgrade
+# has to keep grouping with a pin the user already made.
+APP_USER_MODEL_ID = "LocalChat.Desktop"
 DEFAULT_PORT = 8080
 DEFAULT_OLLAMA = "http://localhost:11434"
 FROZEN = bool(getattr(sys, "frozen", False))
@@ -462,6 +465,21 @@ class WebviewUI:
     def _window(self):
         w = self.webview.create_window(APP_NAME, self.url, background_color="#000000",
                                        text_select=True, zoomable=True, **WINDOW_OPTS)
+
+        def _paint():
+            # before_show is blocking and runs once the form exists. shown repeats it
+            # in case a backend creates the taskbar button late.
+            if not apply_window_icon(w, self.icon) and IS_WIN:
+                log("native window icon not set (%s)" % self.icon)
+
+        try:
+            w.events.before_show += _paint
+        except Exception as exc:
+            log("window icon hook failed: %r" % (exc,))
+        try:
+            w.events.shown += _paint
+        except Exception as exc:
+            log("window icon hook failed: %r" % (exc,))
         try:
             w.events.shown += self.shown.set
         except Exception:
@@ -554,7 +572,7 @@ class DeferredOpen:
 
 def run_ui(url, data_dir, mode, opener):
     """Show the UI, falling back webview -> Edge --app -> default browser. Blocks until closed."""
-    icon = os.path.join(resource_dir(), "desktop_assets", "icon.ico")
+    icon = app_icon_path()
     order = {"auto": ["webview", "edge", "browser"], "webview": ["webview"], "edge": ["edge", "browser"],
              "browser": ["browser"]}[mode]
     for kind in order:
@@ -599,13 +617,81 @@ def install_signal_handlers():
                 pass
 
 
-def set_app_user_model_id():
-    if IS_WIN:
+def app_icon_path():
+    """Multi-resolution icon shipped with the app. Frozen builds read it from _MEIPASS."""
+    return os.path.join(resource_dir(), "desktop_assets", "icon.ico")
+
+
+def _load_drawing_icon(path):
+    from System.Drawing import Icon
+    return Icon(path)
+
+
+def _set_hwnd_icons(native, icon_path):
+    """Select the 16 and 32 images in the .ico. The handles stay alive with the window."""
+    import ctypes
+    handle = getattr(native, "Handle", None)
+    if handle is None:
+        return False
+    hwnd = handle.ToInt64() if hasattr(handle, "ToInt64") else int(handle)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.LoadImageW.argtypes = [
+        ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    user32.LoadImageW.restype = ctypes.c_void_p
+    user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+    user32.SendMessageW.restype = ctypes.c_void_p
+    applied = False
+    for which, side in ((1, 32), (0, 16)):
+        hicon = user32.LoadImageW(None, icon_path, 1, side, side, 0x0010)
+        if not hicon:
+            continue
+        user32.SendMessageW(hwnd, 0x0080, which, hicon)
+        applied = True
+    return applied
+
+
+def apply_window_icon(window, icon_path, windows=None, icon_loader=None, hwnd_setter=None):
+    """Paint icon_path onto a native window. False when there is nothing to paint.
+
+    webview.start(icon=) does not change the Windows form through pywebview 5.4. That
+    form copies the icon from sys.executable, so an unfrozen run shows the Python
+    icon and a broken embedded .ico shows a blank one. Call this from before_show,
+    after the form exists and before it is shown.
+    """
+    if windows is None:
+        windows = IS_WIN
+    if not windows or not icon_path or not os.path.isfile(icon_path):
+        return False
+    native = getattr(window, "native", None)
+    if native is None:
+        return False
+    applied = False
+    if hasattr(native, "Icon"):
         try:
-            import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LocalChat.Desktop")
-        except Exception:
-            pass
+            loader = icon_loader or _load_drawing_icon
+            native.Icon = loader(icon_path)
+            applied = True
+        except Exception as exc:
+            log("window icon was not applied on the form: %r" % (exc,))
+    setter = hwnd_setter if hwnd_setter is not None else _set_hwnd_icons
+    try:
+        if setter(native, icon_path):
+            applied = True
+    except Exception as exc:
+        log("window icon was not applied on the handle: %r" % (exc,))
+    return applied
+
+
+def set_app_user_model_id():
+    """Group this process with shortcuts that carry APP_USER_MODEL_ID. Call before any window."""
+    if not IS_WIN:
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+        log("AppUserModelID %s" % APP_USER_MODEL_ID)
+    except Exception as exc:
+        log("AppUserModelID was not set: %r" % (exc,))
 
 
 # ---------------------------------------------------------------- main
