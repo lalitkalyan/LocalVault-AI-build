@@ -56,15 +56,19 @@ RUN_TIMEOUT = 15
 RUN_OUTPUT_LIMIT = 20000
 MAX_BODY = 64 * 1024 * 1024  # images as base64 can be large
 
-STATIC_FILES = {
-    "/": "index.html",
-    "/index.html": "index.html",
-    "/app.js": "app.js",
-    "/style.css": "style.css",
-    "/favicon.svg": "favicon.svg",
-    "/apple-touch-icon.png": "apple-touch-icon.png",
-    "/manifest.webmanifest": "manifest.webmanifest",
-}
+# Files the browser loads from the app root. PyInstaller must ship this same list.
+ROOT_ASSETS = (
+    "index.html",
+    "app.js",
+    "reliability.js",
+    "style.css",
+    "favicon.svg",
+    "apple-touch-icon.png",
+    "manifest.webmanifest",
+)
+STATIC_FILES = {"/": "index.html"}
+for _asset in ROOT_ASSETS:
+    STATIC_FILES["/" + _asset] = _asset
 MIME = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",

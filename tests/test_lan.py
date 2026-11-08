@@ -444,11 +444,16 @@ class TestLanProcess(unittest.TestCase):
         tmp = tempfile.mkdtemp(prefix="lc-lan-proc-")
         self.addCleanup(shutil.rmtree, tmp, True)
         port = free_port()
-        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", HOME=tmp, USERPROFILE=tmp)
+        env.pop("HOMEDRIVE", None)
+        env.pop("HOMEPATH", None)
+        flags = {}
+        if os.name == "nt":
+            flags["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         proc = subprocess.Popen(
             [PY, os.path.join(ROOT, "desktop.py"), "--port", str(port), "--ui", "none", "--no-ollama",
              "--lan", "--log", "--data", tmp, "--ollama", "http://127.0.0.1:9"],
-            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **flags)
         self.addCleanup(proc.kill)
         self.assertTrue(wait_for(lambda: desktop.probe_app(port), 15), "desktop server did not start")
         self.assertTrue(wait_for(lambda: not refused(ip, port), 10), "LAN listener did not open")
@@ -461,7 +466,10 @@ class TestLanProcess(unittest.TestCase):
         self.assertEqual(paired, 200)
         token = header(hdrs, "Set-Cookie").split(";", 1)[0].split("=", 1)[1]
         self.assertEqual(call(ip, port, path="/store/chats", headers={"Cookie": "lc_session=" + token})[0], 200)
-        proc.send_signal(signal.SIGINT)
+        if os.name == "nt":
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            proc.send_signal(signal.SIGINT)
         self.assertEqual(proc.wait(15), 0)
         log_path = os.path.join(tmp, "localchat.log")
         with open(log_path, encoding="utf-8") as fh:

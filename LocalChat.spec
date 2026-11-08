@@ -13,9 +13,9 @@ ICON = os.path.join(HERE, "desktop_assets", "icon.ico")
 if not os.path.isfile(ICON):
     raise SystemExit(f"missing build input: {ICON}")
 
-datas = [(os.path.join(HERE, f), ".") for f in (
-    "index.html", "app.js", "style.css", "favicon.svg", "apple-touch-icon.png",
-    "manifest.webmanifest")]
+sys.path.insert(0, HERE)
+import server as _app_server  # the same ROOT_ASSETS list the running server serves
+datas = [(os.path.join(HERE, name), ".") for name in _app_server.ROOT_ASSETS]
 datas += [(os.path.join(HERE, "vendor"), "vendor"), (os.path.join(HERE, "desktop_assets"), "desktop_assets")]
 for src, _ in datas:
     if not os.path.exists(src):

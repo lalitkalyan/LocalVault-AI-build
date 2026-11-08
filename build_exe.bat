@@ -49,7 +49,7 @@ echo Using: "%PYEXE%" %PYARGS%
 "%PYEXE%" %PYARGS% --version
 
 rem ---------------------------------------------------------------- sanity checks
-for %%F in (server.py desktop.py lan.py make_icon.py LocalChat.spec requirements-desktop.txt index.html app.js style.css favicon.svg apple-touch-icon.png manifest.webmanifest) do (
+for %%F in (server.py desktop.py lan.py make_icon.py LocalChat.spec requirements-desktop.txt index.html app.js reliability.js style.css favicon.svg apple-touch-icon.png manifest.webmanifest) do (
     if not exist "%%F" (
         echo [ERROR] %%F is missing. Run this script from the local-chat-app folder.
         goto :fail
@@ -111,6 +111,14 @@ echo ===========================================================================
 echo  Done: %CD%\%OUTEXE%
 echo.
 echo  The window title is LocalVault AI. The file name stays Local Chat.exe.
+if "%MODE%"=="onedir" if not exist "%OUTDIR%_internal\reliability.js" (
+    echo [ERROR] The build is missing _internal\reliability.js. app.js cannot load.
+    goto :fail
+)
+if "%MODE%"=="onedir" if not exist "%OUTDIR%_internal\app.js" (
+    echo [ERROR] The build is missing _internal\app.js.
+    goto :fail
+)
 echo  Taskbar icon copied to: %OUTDIR%icon.ico
 echo  If a pinned shortcut still shows the old picture, from this folder:
 echo    powershell -ExecutionPolicy Bypass -File "%~dp0deploy\Refresh-LocalVaultTaskbarIcon.ps1"

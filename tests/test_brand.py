@@ -64,7 +64,8 @@ class TestBrand(unittest.TestCase):
         self.assertIn('StringStruct("ProductName", "LocalVault AI")', spec)
         self.assertIn('StringStruct("FileDescription", "LocalVault AI")', spec)
         self.assertIn('StringStruct("OriginalFilename", "Local Chat.exe")', spec)
-        self.assertIn("manifest.webmanifest", spec)
+        self.assertIn("server.ROOT_ASSETS", spec)
+        self.assertIn("manifest.webmanifest", server.ROOT_ASSETS)
 
     def test_install_and_firewall_still_find_the_msi_path(self):
         install = read("deploy/Install-LocalChatUpdate.ps1")

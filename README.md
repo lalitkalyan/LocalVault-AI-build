@@ -163,6 +163,8 @@ On the installed 1.2.0 build the window sometimes comes up and then never answer
 
 The automated smoke check only proves that `/health` answers after this server's listening socket accepts. It does not reproduce the desktop window on the MSI.
 
+The native window no longer runs a custom icon call on the UI thread before the window is shown. The frozen `Local Chat.exe` still carries `desktop_assets/icon.ico`, and pinned shortcuts keep the icon file set earlier. This is not a claim that the hang is gone. If a launch still stops at `webview.start` in the log, with the window not responding and `/health` accepting but not answering, close that window and start the same exe with `--ui browser` or `--ui edge`. That uses the same loopback server and the same checks, and it does not open the native WebView2 window.
+
 ## Limitations
 
 - **The code runner is not a real sandbox.** It is a separate `python3 -I` process with a timeout, a temp working dir, a minimal environment, and (on macOS/Linux) CPU, memory, and file-size rlimits. The code still runs as your user and can read your files and use the network. Only run code you've read. On Windows only the timeout applies.

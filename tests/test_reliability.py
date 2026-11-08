@@ -1,6 +1,7 @@
 """Stop, timeout, and empty-answer recovery. Uses a fake Ollama, not a live model."""
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -206,6 +207,8 @@ class TestGenerationProxy(unittest.TestCase):
         resp = conn.getresponse()
         health = json.loads(resp.read().decode())
         conn.close()
+        if shutil.which("node") is None:
+            self.skipTest("node is not installed")
         out = subprocess.check_output(
             ["node", "--input-type=module", "-e",
              "import { DEFAULT_LIMITS } from './reliability.js'; process.stdout.write(JSON.stringify(DEFAULT_LIMITS))"],
@@ -218,8 +221,67 @@ class TestGenerationProxy(unittest.TestCase):
         self.assertEqual(server.generation_limits()["first_token_s"], 180)
 
 
+def referenced_root_assets():
+    """Local files the page and modules load. Vendor files are a directory bundle."""
+    with open(os.path.join(ROOT, "index.html"), encoding="utf-8") as fh:
+        html = fh.read()
+    names = set()
+    for match in re.findall(r'(?:src|href)="([^"]+)"', html):
+        if match.startswith(("http:", "https:", "data:", "vendor/")):
+            continue
+        names.add(match.split("?", 1)[0].lstrip("./"))
+    with open(os.path.join(ROOT, "app.js"), encoding="utf-8") as fh:
+        js = fh.read()
+    for match in re.findall(r"""from\s+["']\./([^"']+)["']""", js):
+        names.add(match)
+    return names
+
+
+class TestBundle(unittest.TestCase):
+    def test_pyinstaller_list_matches_files_the_page_loads(self):
+        required = referenced_root_assets()
+        self.assertIn("reliability.js", required)
+        self.assertIn("app.js", required)
+        for name in required:
+            self.assertIn(name, server.ROOT_ASSETS, name)
+            self.assertEqual(server.STATIC_FILES["/" + name], name)
+            self.assertTrue(os.path.isfile(os.path.join(ROOT, name)), name)
+        with open(os.path.join(ROOT, "LocalChat.spec"), encoding="utf-8") as fh:
+            spec = fh.read()
+        self.assertIn("server.ROOT_ASSETS", spec)
+        bundle = tempfile.mkdtemp(prefix="lc-bundle-")
+        self.addCleanup(shutil.rmtree, bundle, True)
+        internal = os.path.join(bundle, "_internal")
+        os.makedirs(internal)
+        for name in server.ROOT_ASSETS:
+            shutil.copy(os.path.join(ROOT, name), os.path.join(internal, name))
+        shutil.copytree(os.path.join(ROOT, "vendor"), os.path.join(internal, "vendor"))
+        for name in required:
+            path = os.path.join(internal, name)
+            self.assertTrue(os.path.isfile(path), path)
+            self.assertGreater(os.path.getsize(path), 0)
+        previous = server.DATA_DIR
+        self.addCleanup(lambda: server.set_data_dir(previous))
+        server.set_data_dir(os.path.join(bundle, "data"))
+        srv = server.make_server("127.0.0.1", 0)
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(srv.shutdown)
+        import http.client
+        for name in required:
+            conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=2)
+            conn.request("GET", "/" + name)
+            resp = conn.getresponse()
+            body = resp.read()
+            conn.close()
+            self.assertEqual(resp.status, 200, name)
+            self.assertTrue(body, name)
+
+
 class TestReliabilityBehavior(unittest.TestCase):
     def test_node_behavior(self):
+        if shutil.which("node") is None:
+            self.skipTest("node is not installed")
         proc = subprocess.run(
             ["node", os.path.join(ROOT, "tests", "reliability_behavior.mjs")],
             cwd=ROOT, text=True, capture_output=True, timeout=20)

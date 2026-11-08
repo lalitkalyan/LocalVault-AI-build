@@ -110,10 +110,31 @@ class TestWindowIcon(unittest.TestCase):
         src = read("desktop.py")
         main = src.split("def main(", 1)[1]
         self.assertLess(main.find("set_app_user_model_id()"), main.find("run_ui("))
-        self.assertIn("events.before_show", src)
+        self.assertNotIn("events.before_show", src)
+        self.assertIn("def bind_window_icon", src)
         self.assertIn('kw["icon"] = self.icon', src)
         self.assertNotIn("SetCurrentProcessExplicitAppUserModelID(\"LocalChat.Desktop\")", src)
         self.assertIn("APP_USER_MODEL_ID", src)
+
+    def test_startup_does_not_register_a_blocking_icon_hook(self):
+        class Bucket(object):
+            def __init__(self):
+                self.handlers = []
+
+            def __iadd__(self, fn):
+                self.handlers.append(fn)
+                return self
+
+        class Window(object):
+            def __init__(self):
+                self.events = type("E", (), {})()
+                self.events.before_show = Bucket()
+                self.events.shown = Bucket()
+
+        window = Window()
+        self.assertIsNone(desktop.bind_window_icon(window, ICO))
+        self.assertEqual(window.events.before_show.handlers, [])
+        self.assertEqual(window.events.shown.handlers, [])
 
     def test_apply_window_icon_is_windows_only_and_paints_the_form(self):
         self.assertFalse(desktop.apply_window_icon(object(), ICO, windows=False))
