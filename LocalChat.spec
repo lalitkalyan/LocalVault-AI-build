@@ -13,9 +13,9 @@ ICON = os.path.join(HERE, "desktop_assets", "icon.ico")
 if not os.path.isfile(ICON):
     raise SystemExit(f"missing build input: {ICON}")
 
-datas = [(os.path.join(HERE, f), ".") for f in (
-    "index.html", "app.js", "style.css", "favicon.svg", "apple-touch-icon.png",
-    "manifest.webmanifest")]
+sys.path.insert(0, HERE)
+import server as _app_server  # the same ROOT_ASSETS list the running server serves
+datas = [(os.path.join(HERE, name), ".") for name in _app_server.ROOT_ASSETS]
 datas += [(os.path.join(HERE, "vendor"), "vendor"), (os.path.join(HERE, "desktop_assets"), "desktop_assets")]
 for src, _ in datas:
     if not os.path.exists(src):
@@ -26,10 +26,10 @@ if sys.platform == "win32":
     from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, StringStruct,
                                                      StringTable, VarFileInfo, VarStruct, VSVersionInfo)
     version_file = VSVersionInfo(
-        ffi=FixedFileInfo(filevers=(1, 2, 0, 0), prodvers=(1, 2, 0, 0)),
+        ffi=FixedFileInfo(filevers=(1, 3, 0, 0), prodvers=(1, 3, 0, 0)),
         kids=[StringFileInfo([StringTable("040904B0", [
             StringStruct("FileDescription", "LocalVault AI"), StringStruct("ProductName", "LocalVault AI"),
-            StringStruct("FileVersion", "1.2.0"), StringStruct("ProductVersion", "1.2.0"),
+            StringStruct("FileVersion", "1.3.0"), StringStruct("ProductVersion", "1.3.0"),
             StringStruct("OriginalFilename", "Local Chat.exe")])]),
             VarFileInfo([VarStruct("Translation", [1033, 1200])])])
 

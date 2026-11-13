@@ -203,7 +203,7 @@ if (-not (Test-Path -LiteralPath $target)) {
 }
 
 $sourceFiles = @(
-    "server.py", "desktop.py", "lan.py", "app.js", "style.css", "index.html", "favicon.svg",
+    "server.py", "desktop.py", "lan.py", "app.js", "reliability.js", "style.css", "index.html", "favicon.svg",
     "apple-touch-icon.png", "start.bat", "start.sh", "Start-iPhone-Access.bat", "build_exe.bat",
     "LocalChat.spec", "requirements-desktop.txt", "make_icon.py", "README.md", ".gitignore", ".gitattributes",
     "manifest.webmanifest"

@@ -39,7 +39,7 @@ class TestBrand(unittest.TestCase):
         self.assertEqual(desktop.APP_ID, "LocalChat")
         data = desktop.default_data_dir({"LOCALAPPDATA": r"C:\Users\Example\AppData\Local"}, windows=True)
         self.assertTrue(data.replace("\\", "/").endswith("LocalChat/data"))
-        self.assertEqual(server.VERSION, "1.2")
+        self.assertEqual(server.VERSION, "1.3")
         self.assertNotIn(RETIRED, server.__doc__ or "")
 
     def test_page_manifest_and_subtitle(self):
@@ -64,7 +64,8 @@ class TestBrand(unittest.TestCase):
         self.assertIn('StringStruct("ProductName", "LocalVault AI")', spec)
         self.assertIn('StringStruct("FileDescription", "LocalVault AI")', spec)
         self.assertIn('StringStruct("OriginalFilename", "Local Chat.exe")', spec)
-        self.assertIn("manifest.webmanifest", spec)
+        self.assertIn("server.ROOT_ASSETS", spec)
+        self.assertIn("manifest.webmanifest", server.ROOT_ASSETS)
 
     def test_install_and_firewall_still_find_the_msi_path(self):
         install = read("deploy/Install-LocalChatUpdate.ps1")

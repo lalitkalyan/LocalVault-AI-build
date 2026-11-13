@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LocalVault AI v1.2 - stdlib-only local server.
+"""LocalVault AI v1.3 - stdlib-only local server.
 
 Serves the static UI, proxies a whitelisted subset of the Ollama API (streaming),
 stores chats as local JSON files, and offers two opt-in local tools:
@@ -20,8 +20,10 @@ import html
 import http.client
 import json
 import os
+import queue
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -34,7 +36,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import lan
 
-VERSION = "1.2"
+VERSION = "1.3"
 # Static files live next to this file, or in the PyInstaller bundle (sys._MEIPASS) when frozen.
 APP_DIR = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = CHAT_DIR = SETTINGS_FILE = ""
@@ -54,15 +56,19 @@ RUN_TIMEOUT = 15
 RUN_OUTPUT_LIMIT = 20000
 MAX_BODY = 64 * 1024 * 1024  # images as base64 can be large
 
-STATIC_FILES = {
-    "/": "index.html",
-    "/index.html": "index.html",
-    "/app.js": "app.js",
-    "/style.css": "style.css",
-    "/favicon.svg": "favicon.svg",
-    "/apple-touch-icon.png": "apple-touch-icon.png",
-    "/manifest.webmanifest": "manifest.webmanifest",
-}
+# Files the browser loads from the app root. PyInstaller must ship this same list.
+ROOT_ASSETS = (
+    "index.html",
+    "app.js",
+    "reliability.js",
+    "style.css",
+    "favicon.svg",
+    "apple-touch-icon.png",
+    "manifest.webmanifest",
+)
+STATIC_FILES = {"/": "index.html"}
+for _asset in ROOT_ASSETS:
+    STATIC_FILES["/" + _asset] = _asset
 MIME = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -75,6 +81,63 @@ MIME = {
 }
 # Only these Ollama endpoints are reachable through the proxy (no pull/delete/push).
 OLLAMA_ALLOWED = {"/api/tags", "/api/chat", "/api/show", "/api/version", "/api/ps", "/api/generate"}
+_GENERATION_PATHS = {"/api/chat", "/api/generate"}
+# Cold start of a local 2B/4B model can sit silent while weights load. 180s is the
+# bound for that wait, not a promise about speed. After bytes flow, 90s of silence
+# means the reply is stuck. 600s is the hard cap for one reply.
+_GEN_DEFAULTS = {"first_token_s": 180.0, "idle_s": 90.0, "total_s": 600.0}
+
+
+def generation_limits():
+    """Read timeout bounds on each call so a test or an operator can change them."""
+    def one(env_name, default, lo, hi):
+        raw = os.environ.get(env_name)
+        try:
+            value = float(raw) if raw not in (None, "") else float(default)
+        except (TypeError, ValueError):
+            value = float(default)
+        if value < lo:
+            value = lo
+        if value > hi:
+            value = hi
+        return value
+
+    first = one("LOCALCHAT_FIRST_TOKEN_S", _GEN_DEFAULTS["first_token_s"], 0.2, 1800)
+    idle = one("LOCALCHAT_IDLE_S", _GEN_DEFAULTS["idle_s"], 0.2, 1800)
+    total = one("LOCALCHAT_TOTAL_S", _GEN_DEFAULTS["total_s"], 0.2, 7200)
+    if total < first:
+        total = first
+    if idle > total:
+        idle = total
+    return {"first_token_s": first, "idle_s": idle, "total_s": total}
+
+
+def client_disconnected(sock):
+    """True when the browser has hung up. An idle socket is still connected.
+
+    The peek must not block. A blocking check stalls the handler after the
+    status line is sent, and the client then sees no body.
+    """
+    if sock is None:
+        return True
+    previous = None
+    try:
+        previous = sock.gettimeout()
+        sock.settimeout(0)
+        try:
+            data = sock.recv(1, socket.MSG_PEEK)
+        except BlockingIOError:
+            return False
+        except OSError:
+            return True
+        return data == b""
+    except OSError:
+        return True
+    finally:
+        try:
+            sock.settimeout(previous)
+        except OSError:
+            pass
 
 
 def _public_static(path):
@@ -533,6 +596,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
 
     def _json(self, code, obj, extra_headers=None):
+        # Windows resets the TCP connection (WSAECONNABORTED / 10053) if a
+        # response is sent while a POST body is still unread. The phone must
+        # see the HTTP status, including 403, not a socket abort.
+        self._discard_unread_body()
         data = json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
@@ -543,10 +610,33 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _content_length(self):
+        try:
+            return int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _discard_unread_body(self):
+        if getattr(self, "_body_consumed", False):
+            return
+        self._body_consumed = True
+        remaining = self._content_length()
+        if remaining <= 0:
+            return
+        remaining = min(remaining, MAX_BODY)
+        while remaining > 0:
+            chunk = self.rfile.read(min(65536, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+
     def _body(self):
-        n = int(self.headers.get("Content-Length") or 0)
+        if getattr(self, "_body_consumed", False):
+            return b""
+        n = self._content_length()
         if n > MAX_BODY:
             raise ValueError("body too large")
+        self._body_consumed = True
         return self.rfile.read(n) if n else b""
 
     def _json_body(self):
@@ -596,7 +686,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/tools/run" and method == "POST":
                 return self._run()
             if path == "/health":
-                return self._json(200, {"ok": True, "ollama": CONFIG["ollama"]})
+                return self._json(200, {"ok": True, "version": VERSION, "ollama": CONFIG["ollama"],
+                                        "generation": generation_limits()})
             if method == "GET":
                 return self._static(path)
             self._json(404, {"error": "not found"})
@@ -755,14 +846,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    # --- Ollama proxy (streams the response through unchanged)
+    # --- Ollama proxy
     def _proxy(self, method, path):
         if path not in OLLAMA_ALLOWED:
             return self._json(404, {"error": f"endpoint {path} not proxied"})
         body = self._body() if method in ("POST", "PUT") else None
+        if method == "POST" and path in _GENERATION_PATHS:
+            return self._proxy_generation(method, path, body)
+        return self._proxy_plain(method, path, body)
+
+    def _ollama_conn(self, timeout):
         u = urllib.parse.urlparse(CONFIG["ollama"])
         conn_cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
-        conn = conn_cls(u.hostname, u.port or (443 if u.scheme == "https" else 80), timeout=900)
+        return conn_cls(u.hostname, u.port or (443 if u.scheme == "https" else 80), timeout=timeout), u
+
+    def _proxy_plain(self, method, path, body):
+        conn, u = self._ollama_conn(900)
         try:
             try:
                 conn.request(method, (u.path.rstrip("/") + path), body=body,
@@ -778,13 +877,144 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             reader = resp.read1 if hasattr(resp, "read1") else (lambda n: resp.readline())
             while True:
+                if client_disconnected(self.connection):
+                    break
                 chunk = reader(65536)
                 if not chunk:
                     break
-                self.wfile.write(chunk)  # client abort -> BrokenPipe -> upstream closed below
+                self.wfile.write(chunk)
                 self.wfile.flush()
         finally:
-            conn.close()  # closing the upstream socket makes Ollama cancel generation
+            conn.close()
+            self.close_connection = True
+
+    def _proxy_generation(self, method, path, body):
+        """Stream one chat/generate call. Closing the upstream socket cancels Ollama.
+
+        The browser disconnect and the time limits are polled while the upstream
+        read is in another thread, so Stop is not stuck behind a silent model.
+        """
+        limits = generation_limits()
+        conn, u = self._ollama_conn(None)
+        stop = threading.Event()
+        out = queue.Queue()
+        upstream_fd = None
+        held = {}
+
+        def pump():
+            try:
+                resp = conn.getresponse()
+                held["resp"] = resp
+                try:
+                    held["fd"] = resp.fileno()
+                except Exception:
+                    pass
+                out.put(("resp", resp.status, resp.getheader("Content-Type", "application/json")))
+                reader = resp.read1 if hasattr(resp, "read1") else (lambda n: resp.readline())
+                while not stop.is_set():
+                    chunk = reader(65536)
+                    if not chunk:
+                        out.put(("eof",))
+                        return
+                    out.put(("data", chunk))
+            except Exception as exc:
+                out.put(("err", exc))
+
+        try:
+            conn.request(method, (u.path.rstrip("/") + path), body=body,
+                         headers={"Content-Type": "application/json"} if body else {})
+            # getresponse() detaches conn.sock. Keep the fd so Stop can close it.
+            upstream_fd = conn.sock.fileno()
+        except (ConnectionError, OSError, http.client.HTTPException) as exc:
+            stop.set()
+            conn.close()
+            return self._json(502, {"error": "ollama_unreachable", "ollama": CONFIG["ollama"],
+                                    "detail": str(exc)})
+        threading.Thread(target=pump, name="ollama-gen", daemon=True).start()
+
+        started = time.monotonic()
+        last = started
+        saw = False
+        headers_sent = False
+        phase = None
+        try:
+            while phase is None:
+                if client_disconnected(self.connection):
+                    phase = "cancelled"
+                    break
+                now = time.monotonic()
+                if now - started >= limits["total_s"]:
+                    phase = "total"
+                    break
+                if saw and now - last >= limits["idle_s"]:
+                    phase = "idle"
+                    break
+                if not saw and now - started >= limits["first_token_s"]:
+                    phase = "first_token"
+                    break
+                try:
+                    item = out.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+                kind = item[0]
+                if kind == "resp":
+                    self.send_response(item[1])
+                    self.send_header("Content-Type", item[2])
+                    self._common_headers()
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    headers_sent = True
+                    continue
+                if kind == "data":
+                    saw = True
+                    last = time.monotonic()
+                    try:
+                        self.wfile.write(item[1])
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        phase = "cancelled"
+                        break
+                    continue
+                if kind == "eof":
+                    break
+                if kind == "err":
+                    if not headers_sent:
+                        stop.set()
+                        conn.close()
+                        return self._json(502, {"error": "ollama_unreachable", "ollama": CONFIG["ollama"],
+                                                "detail": str(item[1])})
+                    break
+        finally:
+            stop.set()
+            # shutdown the TCP connection. close() on one fd leaves a dup
+            # open inside the response reader, so Ollama would keep generating.
+            for fd in (held.get("fd"), upstream_fd):
+                if fd is None:
+                    continue
+                try:
+                    wrapped = socket.socket(fileno=fd)
+                except OSError:
+                    continue
+                try:
+                    wrapped.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    wrapped.detach()
+                except OSError:
+                    pass
+            if phase in ("first_token", "idle", "total"):
+                payload = {"error": "generation_timeout", "phase": phase,
+                           "limit_s": limits[{"first_token": "first_token_s", "idle": "idle_s",
+                                              "total": "total_s"}[phase]]}
+                if headers_sent:
+                    try:
+                        self.wfile.write(b"\n" + json.dumps(payload).encode("utf-8") + b"\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        pass
+                else:
+                    self._json(504, payload)
             self.close_connection = True
 
     # --- chat/settings storage

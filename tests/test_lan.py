@@ -50,7 +50,14 @@ def call(ip, port, method="GET", path="/", body=None, headers=None, timeout=5):
         hdrs.update(headers)
     data = json.dumps(body).encode() if isinstance(body, (dict, list)) else body
     conn.request(method, path, body=data, headers=hdrs)
-    resp = conn.getresponse()
+    try:
+        resp = conn.getresponse()
+    except (ConnectionAbortedError, ConnectionResetError) as exc:
+        conn.close()
+        raise AssertionError(
+            "%s %s on %s reset the TCP connection (%s). "
+            "A refusal must be an HTTP status such as 403, not a socket abort."
+            % (method, path, ip, exc)) from exc
     payload = resp.read()
     got = {key: value for key, value in resp.getheaders()}
     conn.close()
@@ -377,6 +384,7 @@ class TestLanHttp(unittest.TestCase):
             status, payload, _ = call(self.ip, self.port, "POST", "/tools/search", {"query": "x"}, headers=cookie)
         self.assertEqual(status, 200, payload)
         # Paired phone still cannot enable, read the code, or open a desktop window.
+        # Each of these must come back as HTTP 403 or 405. A TCP reset is not a pass.
         for method, path, body in (
             ("POST", "/lan/enable", {"acknowledge": True}),
             ("GET", "/lan/code", None),
@@ -389,6 +397,13 @@ class TestLanHttp(unittest.TestCase):
             self.assertIn(status, (403, 405), (path, status, payload))
             self.assertNotIn(code.encode(), payload)
         self.assertEqual(self.opened, [])
+        # The 403 is a finished HTTP response. The request body is consumed so
+        # the socket can close without a reset.
+        status, payload, hdrs = call(self.ip, self.port, "POST", "/lan/enable",
+                                      {"acknowledge": True, "note": "x" * 40}, headers=self.origin())
+        self.assertEqual(status, 403, payload)
+        self.assertIn(b"forbidden", payload)
+        self.assertEqual(hdrs.get("Content-Length") or header(hdrs, "Content-Length"), str(len(payload)))
         # Loopback can still open a window and can revoke the phone.
         status, _, _ = call("127.0.0.1", self.port, "POST", "/__desktop/open", {},
                             headers={"X-LocalChat-Token": self.token})
@@ -444,11 +459,16 @@ class TestLanProcess(unittest.TestCase):
         tmp = tempfile.mkdtemp(prefix="lc-lan-proc-")
         self.addCleanup(shutil.rmtree, tmp, True)
         port = free_port()
-        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", HOME=tmp, USERPROFILE=tmp)
+        env.pop("HOMEDRIVE", None)
+        env.pop("HOMEPATH", None)
+        flags = {}
+        if os.name == "nt":
+            flags["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         proc = subprocess.Popen(
             [PY, os.path.join(ROOT, "desktop.py"), "--port", str(port), "--ui", "none", "--no-ollama",
              "--lan", "--log", "--data", tmp, "--ollama", "http://127.0.0.1:9"],
-            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **flags)
         self.addCleanup(proc.kill)
         self.assertTrue(wait_for(lambda: desktop.probe_app(port), 15), "desktop server did not start")
         self.assertTrue(wait_for(lambda: not refused(ip, port), 10), "LAN listener did not open")
@@ -461,7 +481,10 @@ class TestLanProcess(unittest.TestCase):
         self.assertEqual(paired, 200)
         token = header(hdrs, "Set-Cookie").split(";", 1)[0].split("=", 1)[1]
         self.assertEqual(call(ip, port, path="/store/chats", headers={"Cookie": "lc_session=" + token})[0], 200)
-        proc.send_signal(signal.SIGINT)
+        if os.name == "nt":
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            proc.send_signal(signal.SIGINT)
         self.assertEqual(proc.wait(15), 0)
         log_path = os.path.join(tmp, "localchat.log")
         with open(log_path, encoding="utf-8") as fh:

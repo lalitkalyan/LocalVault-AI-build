@@ -80,6 +80,20 @@ def default_data_dir(env=None, windows=IS_WIN):
     return os.path.join(base, APP_ID, "data")
 
 
+def _home_dir(env):
+    """Home directory for legacy import. Uses the passed env, not another user's profile."""
+    if os.name == "nt":
+        for key in ("USERPROFILE", "HOME"):
+            if env.get(key):
+                return env[key]
+        drive, path = env.get("HOMEDRIVE"), env.get("HOMEPATH")
+        if drive and path:
+            return drive + path
+    elif env.get("HOME"):
+        return env["HOME"]
+    return os.path.expanduser("~")
+
+
 def _same_path(a, b):
     return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
 
@@ -90,7 +104,7 @@ def legacy_data_dirs(data_dir, env=None):
     cands = [os.path.join(install_dir(), "data")]
     if not FROZEN:
         cands.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
-    cands.append(os.path.join(os.path.expanduser("~"), "local-chat-app", "data"))
+    cands.append(os.path.join(_home_dir(env), "local-chat-app", "data"))
     cands += KNOWN_LEGACY_DIRS
     cands += [p for p in (env.get("LOCALCHAT_LEGACY_DATA") or "").split(os.pathsep) if p]
     out = []
@@ -387,9 +401,13 @@ def start_ollama(url, data_dir, wait=20.0, started=None):
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         si.wShowWindow = 0  # SW_HIDE
         kw = {"creationflags": CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, "startupinfo": si}
+    argv = [exe, "serve"]
+    # A .exe is started directly. A script path (used by tests) is not a Win32 image.
+    if IS_WIN and not exe.lower().endswith(".exe"):
+        argv = [sys.executable, exe, "serve"]
     logf = open(os.path.join(data_dir, "ollama.log"), "ab")
     try:
-        proc = subprocess.Popen([exe, "serve"], stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
                                 env=env, close_fds=True, **kw)
     except OSError as e:
         log(f"could not start ollama: {e}")
@@ -398,7 +416,7 @@ def start_ollama(url, data_dir, wait=20.0, started=None):
         logf.close()
     if started is not None:
         started.append(proc)
-    log(f"started ollama (pid {proc.pid}): {exe} serve")
+    log(f"started ollama (pid {proc.pid}): {' '.join(argv)}")
     deadline = time.time() + wait
     while time.time() < deadline:
         if ollama_alive(url, timeout=0.5):
@@ -465,21 +483,11 @@ class WebviewUI:
     def _window(self):
         w = self.webview.create_window(APP_NAME, self.url, background_color="#000000",
                                        text_select=True, zoomable=True, **WINDOW_OPTS)
-
-        def _paint():
-            # before_show is blocking and runs once the form exists. shown repeats it
-            # in case a backend creates the taskbar button late.
-            if not apply_window_icon(w, self.icon) and IS_WIN:
-                log("native window icon not set (%s)" % self.icon)
-
-        try:
-            w.events.before_show += _paint
-        except Exception as exc:
-            log("window icon hook failed: %r" % (exc,))
-        try:
-            w.events.shown += _paint
-        except Exception as exc:
-            log("window icon hook failed: %r" % (exc,))
+        # Do not paint the icon here. before_show runs on the UI thread before the
+        # message pump, and a synchronous SendMessage or System.Drawing call there
+        # can stall that thread. The HTTP server then accepts connections and never
+        # answers. The frozen exe already carries desktop_assets/icon.ico.
+        bind_window_icon(w, self.icon)
         try:
             w.events.shown += self.shown.set
         except Exception:
@@ -497,6 +505,7 @@ class WebviewUI:
             kw["icon"] = self.icon
         if IS_WIN:
             kw["gui"] = "edgechromium"
+        log("webview.start")
         self.webview.start(**kw)
 
 
@@ -638,16 +647,28 @@ def _set_hwnd_icons(native, icon_path):
     user32.LoadImageW.argtypes = [
         ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
     user32.LoadImageW.restype = ctypes.c_void_p
-    user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
-    user32.SendMessageW.restype = ctypes.c_void_p
+    user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+    user32.PostMessageW.restype = ctypes.c_int
     applied = False
     for which, side in ((1, 32), (0, 16)):
         hicon = user32.LoadImageW(None, icon_path, 1, side, side, 0x0010)
         if not hicon:
             continue
-        user32.SendMessageW(hwnd, 0x0080, which, hicon)
+        # PostMessage returns immediately. SendMessage can stall the UI thread.
+        user32.PostMessageW(hwnd, 0x0080, which, hicon)
         applied = True
     return applied
+
+
+def bind_window_icon(window, icon_path):
+    """Startup must not register a UI-thread icon callback.
+
+    The embedded exe icon is enough for a frozen build. before_show is blocking
+    and runs before the WinForms message pump. SendMessage(WM_SETICON) or a
+    System.Drawing call there can leave the window Not Responding and stop the
+    HTTP thread from logging or answering. icon_path is unused on purpose.
+    """
+    return None
 
 
 def apply_window_icon(window, icon_path, windows=None, icon_loader=None, hwnd_setter=None):

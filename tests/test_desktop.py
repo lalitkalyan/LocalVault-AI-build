@@ -65,13 +65,30 @@ def now_ms():
     return int(time.time() * 1000)
 
 
+def popen_group():
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {}
+
+
+def ask_stop(proc):
+    """Ask a child to exit. Windows rejects signal.SIGINT on a normal Popen."""
+    if os.name == "nt":
+        proc.send_signal(signal.CTRL_BREAK_EVENT)
+    else:
+        proc.send_signal(signal.SIGINT)
+
+
 class Tmp(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="lc-test-")
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.env = dict(os.environ, HOME=self.tmp, LOCALCHAT_DATA=os.path.join(self.tmp, "appdata"),
+        self.env = dict(os.environ, HOME=self.tmp, USERPROFILE=self.tmp,
+                        LOCALCHAT_DATA=os.path.join(self.tmp, "appdata"),
                         PYTHONDONTWRITEBYTECODE="1")
         self.env.pop("LOCALCHAT_LEGACY_DATA", None)
+        self.env.pop("HOMEDRIVE", None)
+        self.env.pop("HOMEPATH", None)
 
 
 # ---------------------------------------------------------------- server.py
@@ -79,7 +96,8 @@ class TestServerStandalone(Tmp):
     def test_python_server_py_still_works(self):
         port, data = free_port(), os.path.join(self.tmp, "d")
         p = subprocess.Popen([PY, os.path.join(ROOT, "server.py"), "--port", str(port), "--data", data],
-                             cwd=ROOT, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                             cwd=ROOT, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                             **popen_group())
         self.addCleanup(p.kill)
         self.assertTrue(wait_for(lambda: desktop.probe_app(port)))
         st, body = req(port, path="/")
@@ -88,9 +106,9 @@ class TestServerStandalone(Tmp):
         self.assertEqual(req(port, path="/vendor/marked.umd.js")[0], 200)
         self.assertEqual(req(port, "PUT", "/store/chats/abc", {"title": "x"})[0], 200)
         self.assertTrue(os.path.isfile(os.path.join(data, "chats", "abc.json")))
-        p.send_signal(signal.SIGINT)
+        ask_stop(p)
         out, _ = p.communicate(timeout=5)
-        self.assertIn("v1.2", out)
+        self.assertIn("v1.3", out)
         self.assertIn(data, out)
 
     def test_default_data_dir_is_next_to_server_py(self):
@@ -154,7 +172,8 @@ class TestPaths(unittest.TestCase):
         self.assertTrue(d.replace("\\", "/").endswith("LocalChat/data"))
 
     def test_linux_default_and_override(self):
-        self.assertEqual(desktop.default_data_dir({"XDG_DATA_HOME": "/x"}, windows=False), "/x/LocalChat/data")
+        self.assertEqual(desktop.default_data_dir({"XDG_DATA_HOME": "/x"}, windows=False),
+                         os.path.join("/x", "LocalChat", "data"))
         self.assertEqual(desktop.default_data_dir({"LOCALCHAT_DATA": "/y/z"}, windows=False), "/y/z")
 
 
@@ -214,9 +233,11 @@ class TestMigration(Tmp):
             json.dump({"model": "qwen3:4b"}, f)
 
     def test_discovery_finds_home_install_and_excludes_target(self):
-        with mock.patch.dict(os.environ, {"HOME": self.tmp}):
-            srcs = desktop.legacy_data_dirs(self.data, env={"LOCALCHAT_LEGACY_DATA": self.data + os.pathsep
-                                                            + self.legacy})
+        isolated = os.path.join(self.tmp, "no-install")
+        env = {"HOME": self.tmp, "USERPROFILE": self.tmp,
+               "LOCALCHAT_LEGACY_DATA": self.data + os.pathsep + self.legacy}
+        with mock.patch.object(desktop, "install_dir", return_value=isolated):
+            srcs = desktop.legacy_data_dirs(self.data, env=env)
         self.assertEqual([os.path.realpath(s) for s in srcs], [os.path.realpath(self.legacy)])
 
     def test_migrate_once_newer_wins_and_sources_untouched(self):
@@ -420,6 +441,8 @@ class TestUI(Tmp):
     def test_real_pywebview_failure_is_caught(self):
         """With pywebview installed but no usable GUI backend (Linux box, no GTK/Qt/display),
         run_ui('webview') must log and return None instead of crashing; 'auto' would then try Edge."""
+        if os.name == "nt":
+            self.skipTest("Windows has a real WebView2 window; this checks a headless failure only")
         try:
             import webview  # noqa: F401
         except ImportError:
@@ -448,7 +471,7 @@ class TestEndToEnd(Tmp):
         write_chat(os.path.join(legacy, "chats"), "legacychat", now_ms())
         args = [PY, os.path.join(ROOT, "desktop.py"), "--port", str(port), "--ollama", f"http://127.0.0.1:{oport}"]
         p1 = subprocess.Popen(args + ["--ui", "none", "--log"], env=env, stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL)
+                              stderr=subprocess.DEVNULL, **popen_group())
         self.addCleanup(p1.kill)
         data = env["LOCALCHAT_DATA"]
         self.assertTrue(wait_for(lambda: desktop.probe_app(port) and desktop.read_instance(data), 15))
@@ -459,7 +482,7 @@ class TestEndToEnd(Tmp):
         r = subprocess.run(args + ["--ui", "browser", "--log"], env=dict(env, BROWSER="false"), timeout=15,
                            capture_output=True)
         self.assertEqual(r.returncode, 0)
-        p1.send_signal(signal.SIGINT)
+        ask_stop(p1)
         rc = p1.wait(10)
         with open(os.path.join(data, "localchat.log")) as f:
             self.assertEqual(rc, 0, f.read())
@@ -483,11 +506,11 @@ class TestEndToEnd(Tmp):
         data = env["LOCALCHAT_DATA"]
         p1 = subprocess.Popen([PY, os.path.join(ROOT, "desktop.py"), "--port", str(port), "--ollama",
                                f"http://127.0.0.1:{oport}", "--ui", "none", "--log"], env=env,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **popen_group())
         self.addCleanup(p1.kill)
         logf = os.path.join(data, "localchat.log")
         self.assertTrue(wait_for(lambda: os.path.exists(logf) and "started ollama" in open(logf).read(), 15))
-        p1.send_signal(signal.SIGINT)
+        ask_stop(p1)
         self.assertEqual(p1.wait(10), 0)
         log = open(logf).read()
         self.assertIn("stopped ollama", log)

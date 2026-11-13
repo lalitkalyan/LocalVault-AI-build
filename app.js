@@ -1,4 +1,5 @@
-// LocalVault AI v1.2 — frontend. No external requests: everything goes to this PC's server.
+// LocalVault AI v1.3 — frontend. No external requests: everything goes to this PC's server.
+import { splitThink, turnNote, planRetry, sameGeneration, canSwitchChat, DEFAULT_LIMITS } from "./reliability.js";
 const DEFAULT_SYSTEM_PROMPT = "You are a direct, no-nonsense assistant. Answer clearly and concisely. Do not add polite filler, moralizing, disclaimers, or unnecessary niceties. Be straightforward and get to the point. If something is wrong or dumb, say so. Prioritize usefulness over being agreeable.";
 const CODE_PROMPT = "\n\nCode interpreter: you can run Python 3 (standard library only, no network, no input(), 15s limit). When computing, verifying, or processing data helps, write ONE complete runnable script in a ```python code block that prints its results. The user runs it locally and sends you the output; then give the final answer based on that output. Do not invent outputs.";
 const REASON_PROMPT = "\n\nReasoning mode: think through the problem step by step before answering. Show the key steps briefly, then give the final answer clearly marked.";
@@ -13,7 +14,7 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 
 const state = {
   settings: { systemPrompt: DEFAULT_SYSTEM_PROMPT, temperature: 0.6, autoRun: false, fetchPages: true, web: false, reason: false, code: false, autoModel: true, lastModel: "" },
-  models: [], caps: {}, chats: [], chat: null, pending: [], streaming: null, searching: false, ollamaOk: false, userPickedModel: false, pairing: false,
+  models: [], caps: {}, chats: [], chat: null, pending: [], streaming: null, searching: false, ollamaOk: false, userPickedModel: false, pairing: false, generation: 0, limits: DEFAULT_LIMITS, version: "1.3",
 };
 
 // ------------------------------------------------------------------ API
@@ -259,7 +260,7 @@ function renderSidebar() {
   }
 }
 async function openChat(id) {
-  if (state.streaming) return;
+  if (!canSwitchChat(!!state.streaming)) return;
   try { state.chat = await api(`/store/chats/${id}`); } catch { return; }
   if (state.chat.model && state.models.some((m) => m.name === state.chat.model)) { $("#modelSelect").value = state.chat.model; await updateCaps(); }
   renderSidebar(); renderMessages();
@@ -273,8 +274,8 @@ async function deleteChat(id) {
   if (state.chat && state.chat.id === id) state.chat = null;
   await loadChats(); renderMessages();
 }
-async function saveChat() {
-  const c = state.chat; if (!c) return;
+async function saveChat(target) {
+  const c = target || state.chat; if (!c) return;
   c.updated = Date.now();
   try { await api(`/store/chats/${c.id}`, { method: "PUT", body: c }); } catch (e) { notice(`Couldn't save chat: ${esc(e.message)}`); }
   const i = state.chats.findIndex((x) => x.id === c.id);
@@ -285,13 +286,6 @@ async function saveChat() {
 }
 
 // ------------------------------------------------------------------ rendering
-function splitThink(content, thinking) {
-  // Some models emit <think>…</think> inline instead of the `thinking` field.
-  let t = thinking || "", c = content || "";
-  const m = c.match(/^\s*<think>([\s\S]*?)(<\/think>|$)/);
-  if (m) { t = (t ? t + "\n" : "") + m[1]; c = c.slice(m[0].length); }
-  return { t: t.trim(), c };
-}
 function renderAssistantInner(m, live) {
   const { t, c } = splitThink(m.content, m.thinking);
   let h = "";
@@ -300,7 +294,11 @@ function renderAssistantInner(m, live) {
   if (m.sources && m.sources.length) {
     h += `<div class="sources"><span class="s-label">Sources</span>${m.sources.map((s, i) => `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer" title="${esc(s.url)}">[${i + 1}] ${esc(s.title || s.url)}</a>`).join("")}</div>`;
   }
-  if (m.error) h += `<div class="notice">⚠ ${esc(m.error)}</div>`;
+  if (!live) {
+    const note = turnNote(m);
+    if (note) h += `<div class="turn-note">${esc(note.text)}</div>`;
+    else if (m.error) h += `<div class="notice">⚠ ${esc(m.error)}</div>`;
+  }
   return h;
 }
 function renderMessages() {
@@ -338,8 +336,16 @@ function renderMsg(m, i) {
   if (m.role === "notice") return el("div", "notice", m.html);
   const w = el("div", "msg assistant"); w.dataset.idx = i;
   const b = el("div", "bubble"); b.innerHTML = renderAssistantInner(m, false); w.append(b);
-  const meta = el("div", "msg-actions", `<button data-act="copymsg">Copy</button>${i === state.chat.messages.length - 1 ? '<button data-act="regen">Regenerate</button>' : ""}<span class="meta" style="margin:2px 6px 0">${esc(m.model || "")}${m.stopped ? " · stopped" : ""} · ${esc(fmtTime(m.ts))}</span>`);
-  w.append(meta); return w;
+  const last = i === state.chat.messages.length - 1;
+  const note = last && !state.streaming ? turnNote(m) : null;
+  let actions = `<button data-act="copymsg">Copy</button>`;
+  if (last && !(note && note.action)) actions += `<button data-act="regen">Regenerate</button>`;
+  if (note && note.action === "retry-noreason") actions += `<button class="recovery" type="button" data-act="retry-noreason">Retry without reasoning</button>`;
+  if (note && note.action === "retry-same") actions += `<button class="recovery" type="button" data-act="retry-same">Retry</button>`;
+  const flag = m.stopped ? " · stopped" : note && note.kind === "timeout" ? " · timed out" : note && note.kind === "empty_final" ? " · no answer" : "";
+  actions += `<span class="meta" style="margin:2px 6px 0">${esc(m.model || "")}${flag} · ${esc(fmtTime(m.ts))}</span>`;
+  w.append(el("div", "msg-actions", actions));
+  return w;
 }
 function notice(html) {
   const box = $("#messages"); const e = $("#empty") || box.querySelector(".empty"); if (e) e.remove();
@@ -406,10 +412,11 @@ async function addFiles(files) {
 }
 
 // ------------------------------------------------------------------ sending
-function toOllamaMessages(model, caps, chat) {
+function toOllamaMessages(model, caps, chat, think) {
+  const reason = think === undefined ? !!state.settings.reason : !!think;
   let sys = state.settings.systemPrompt || DEFAULT_SYSTEM_PROMPT;
   if (state.settings.code) sys += CODE_PROMPT;
-  if (state.settings.reason && !caps.includes("thinking")) sys += REASON_PROMPT;
+  if (reason && !caps.includes("thinking")) sys += REASON_PROMPT;
   const out = [{ role: "system", content: sys }];
   const vision = caps.includes("vision");
   for (const m of chat.messages) {
@@ -422,6 +429,8 @@ function toOllamaMessages(model, caps, chat) {
       if (vision && m.images && m.images.length) msg.images = m.images;
       out.push(msg);
     } else if (m.role === "assistant") {
+      if (m.omitFromModel) continue;
+      if (!splitThink(m.content, m.thinking).c.trim() && m.errorKind === "empty_final") continue;
       out.push({ role: "assistant", content: splitThink(m.content, "").c });
     } else if (m.role === "tool") {
       const r = m.result || {};
@@ -431,9 +440,9 @@ function toOllamaMessages(model, caps, chat) {
   return out;
 }
 
-async function webContext(query) {
+async function webContext(query, signal) {
   setStatus("Searching the web…");
-  const d = await api("/tools/search", { method: "POST", body: { query, fetch_pages: state.settings.fetchPages ? 2 : 0, max_results: 5 } });
+  const d = await api("/tools/search", { method: "POST", body: { query, fetch_pages: state.settings.fetchPages ? 2 : 0, max_results: 5 }, signal });
   const res = d.results || [];
   if (!res.length) throw new Error("no results (DuckDuckGo may be rate-limiting)");
   const today = new Date().toISOString().slice(0, 10);
@@ -499,67 +508,147 @@ async function send() {
   let sources = [];
   state.chat.messages.push(um);
   renderMessages();
+  const prep = new AbortController();
+  const prepId = ++state.generation;
+  state.streaming = { genId: prepId, ctrl: prep, reason: null, chatId: state.chat.id };
+  setSending(true);
   if (state.settings.web && text) {
-    um.web = true; setSending(true); state.searching = true;
-    try { const w = await webContext(text); um.context = w.context; sources = w.sources; }
-    catch (e) { state.chat.messages.push({ role: "notice", html: `⚠ Web search failed (${esc(e.message)}). Answered without it.`, ts: Date.now() }); }
+    um.web = true; state.searching = true;
+    try { const w = await webContext(text, prep.signal); um.context = w.context; sources = w.sources; }
+    catch (e) {
+      if (prep.signal.aborted || e.name === "AbortError") {
+        state.chat.messages.push({ role: "notice", html: "Stopped before the reply started.", ts: Date.now() });
+      } else {
+        state.chat.messages.push({ role: "notice", html: `⚠ Web search failed (${esc(e.message)}). Answered without it.`, ts: Date.now() });
+      }
+    }
     setStatus(""); state.searching = false;
   }
+  if (prep.signal.aborted) {
+    if (state.streaming && state.streaming.genId === prepId) { state.streaming = null; setSending(false); }
+    await saveChat(state.chat);
+    renderMessages();
+    return;
+  }
+  if (state.streaming && state.streaming.genId === prepId) state.streaming = null;
   await saveChat();
   await generate(model, caps, { sources });
 }
 
-async function generate(model, caps, { sources = [], followup = false } = {}) {
+function timeoutFromPayload(j) {
+  return { errorKind: "timeout", phase: j.phase || "total", limit_s: j.limit_s, error: "generation_timeout" };
+}
+
+async function generate(model, caps, { sources = [], followup = false, thinkOverride, recovery = false } = {}) {
   const chat = state.chat;
+  if (!chat) return;
   chat.model = model;
-  const am = { role: "assistant", content: "", thinking: "", model, ts: Date.now(), sources };
+  const requestThink = thinkOverride === undefined ? !!state.settings.reason : !!thinkOverride;
+  const am = { role: "assistant", content: "", thinking: "", model, ts: Date.now(), sources, requestThink };
   const body = {
-    model, messages: toOllamaMessages(model, caps, chat), stream: true,
+    model, messages: toOllamaMessages(model, caps, chat, requestThink), stream: true,
     options: { temperature: Number(state.settings.temperature) },
   };
-  if (caps.includes("thinking")) body.think = !!state.settings.reason;
+  if (caps.includes("thinking")) body.think = requestThink;
   chat.messages.push(am);
-  renderMessages();
-  const node = $("#messages").lastElementChild; const bubble = node.querySelector(".bubble");
-  const ctrl = new AbortController(); state.streaming = ctrl; setSending(true); setStatus("Generating…");
+  if (state.chat === chat) renderMessages();
+  const node = state.chat === chat ? $("#messages").lastElementChild : null;
+  const bubble = node ? node.querySelector(".bubble") : null;
+  const ctrl = new AbortController();
+  const genId = ++state.generation;
+  state.streaming = { genId, ctrl, reason: null, chatId: chat.id };
+  setSending(true); setStatus("Generating…");
+  const limits = state.limits || DEFAULT_LIMITS;
+  const backstop = setTimeout(() => {
+    if (state.streaming && sameGeneration(state.streaming.genId, genId)) {
+      state.streaming.reason = "timeout";
+      ctrl.abort();
+    }
+  }, (Number(limits.total_s) + 15) * 1000);
   let raf = 0;
-  const paint = () => { raf = 0; bubble.innerHTML = renderAssistantInner(am, true); const box = $("#messages"); if (box.scrollHeight - box.scrollTop - box.clientHeight < 200) box.scrollTop = box.scrollHeight; };
+  const paint = () => {
+    raf = 0;
+    if (state.chat !== chat || !bubble) return;
+    bubble.innerHTML = renderAssistantInner(am, true);
+    const box = $("#messages");
+    if (box.scrollHeight - box.scrollTop - box.clientHeight < 200) box.scrollTop = box.scrollHeight;
+  };
+  const applyLine = (j) => {
+    if (!sameGeneration(state.streaming && state.streaming.genId, genId)) return;
+    if (j.error === "generation_timeout") {
+      Object.assign(am, timeoutFromPayload(j));
+      return;
+    }
+    if (j.error) throw new Error(typeof j.error === "string" ? j.error : "generation failed");
+    if (j.message) { am.content += j.message.content || ""; am.thinking += j.message.thinking || ""; }
+    if (j.done) { am.stats = { eval_count: j.eval_count, eval_ms: Math.round((j.eval_duration || 0) / 1e6) }; }
+    if (!raf) raf = requestAnimationFrame(paint);
+  };
   try {
     const r = await fetch("/api/chat", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
     if (r.status === 401) { showPairScreen(); throw new Error("This phone needs to pair again."); }
     if (!r.ok) {
-      let msg = r.statusText; try { const j = await r.json(); msg = j.error === "ollama_unreachable" ? `Can't reach Ollama at ${j.ollama}. Is it running?` : (j.error || msg); } catch {}
-      throw new Error(msg);
-    }
-    const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
-        if (!line) continue;
-        let j; try { j = JSON.parse(line); } catch { continue; }
-        if (j.error) throw new Error(j.error);
-        if (j.message) { am.content += j.message.content || ""; am.thinking += j.message.thinking || ""; }
-        if (j.done) { am.stats = { eval_count: j.eval_count, eval_ms: Math.round((j.eval_duration || 0) / 1e6) }; }
-        if (!raf) raf = requestAnimationFrame(paint);
+      let msg = r.statusText, payload = null;
+      try { payload = await r.json(); msg = payload.error === "ollama_unreachable" ? `Can't reach Ollama at ${payload.ollama}. Is it running?` : (payload.error || msg); } catch {}
+      if (payload && payload.error === "generation_timeout") Object.assign(am, timeoutFromPayload(payload));
+      else throw new Error(msg);
+    } else {
+      const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done || !sameGeneration(state.streaming && state.streaming.genId, genId)) break;
+        buf += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+          if (!line) continue;
+          let j; try { j = JSON.parse(line); } catch { continue; }
+          applyLine(j);
+          if (am.errorKind === "timeout") break;
+        }
+        if (am.errorKind === "timeout") break;
       }
     }
   } catch (e) {
-    if (e.name === "AbortError") am.stopped = true;
-    else am.error = /does not support thinking/i.test(e.message) ? e.message + " (turn off Reasoning)" : e.message;
+    const reason = state.streaming && state.streaming.reason;
+    if (e.name === "AbortError" || ctrl.signal.aborted) {
+      if (reason === "timeout" && am.errorKind !== "timeout") am.errorKind = "timeout";
+      else if (am.errorKind !== "timeout") { am.stopped = true; am.errorKind = "cancelled"; }
+    } else if (!am.errorKind) {
+      am.error = /does not support thinking/i.test(e.message) ? e.message + " (turn off Reasoning)" : e.message;
+      am.errorKind = "error";
+    }
   } finally {
+    clearTimeout(backstop);
     cancelAnimationFrame(raf);
-    state.streaming = null; setSending(false); setStatus(am.stats && am.stats.eval_ms ? `${(am.stats.eval_count / (am.stats.eval_ms / 1000)).toFixed(1)} tok/s` : "");
+    if (!am.stopped && am.errorKind !== "timeout" && am.errorKind !== "error" && am.errorKind !== "cancelled") {
+      const note = turnNote(am);
+      if (note && note.kind === "empty_final") am.errorKind = "empty_final";
+    }
+    if (state.streaming && sameGeneration(state.streaming.genId, genId)) state.streaming = null;
+    setSending(!!state.streaming);
+    if (state.chat === chat) {
+      setStatus(am.stats && am.stats.eval_ms ? `${(am.stats.eval_count / (am.stats.eval_ms / 1000)).toFixed(1)} tok/s` : "");
+      renderMessages();
+    }
     if (!am.thinking) delete am.thinking;
-    renderMessages(); await saveChat();
+    await saveChat(chat);
   }
-  if (!am.stopped && !am.error && !followup && state.settings.code && state.settings.autoRun) {
+  if (!am.stopped && !am.errorKind && !am.error && !followup && !recovery && state.settings.code && state.settings.autoRun && state.chat === chat) {
     const code = firstPython(am.content);
     if (code) { await runCode(code); await generate(model, caps, { followup: true }); }
   }
+}
+
+async function retryAssistant(mode) {
+  if (state.streaming || state.searching || !state.chat) return;
+  const plan = planRetry(state.chat.messages, mode);
+  if (!plan.ok) return;
+  state.chat.messages[plan.assistantIndex].omitFromModel = true;
+  const failed = state.chat.messages[plan.assistantIndex];
+  const model = failed.model || $("#modelSelect").value;
+  if (!model) return;
+  await generate(model, await getCaps(model), { sources: plan.sources, thinkOverride: plan.think, recovery: true });
 }
 function firstPython(s) { const m = (s || "").match(/```(?:python|py|python3)[^\n]*\n([\s\S]*?)```/i); return m ? m[1] : null; }
 
@@ -573,7 +662,11 @@ async function runCode(code) {
   renderMessages(); await saveChat();
 }
 
-function stop() { if (state.streaming) state.streaming.abort(); }
+function stop() {
+  if (!state.streaming) return;
+  if (state.streaming.reason !== "timeout") state.streaming.reason = "cancelled";
+  state.streaming.ctrl.abort();
+}
 function setSending(on) { const b = $("#sendBtn"); b.textContent = on ? "■" : "↑"; b.title = on ? "Stop" : "Send"; b.classList.toggle("stop", on); }
 function autosize() { const t = $("#input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 240) + "px"; }
 
@@ -623,12 +716,14 @@ function bind() {
     if (act === "copy") { copy(b.closest(".codeblock").querySelector("code").textContent, b); }
     else if (act === "run") { if (state.streaming) return; b.disabled = true; await runCode(b.closest(".codeblock").querySelector("code").textContent); }
     else if (act === "copymsg") { const i = +b.closest("[data-idx]").dataset.idx; copy(splitThink(state.chat.messages[i].content, "").c, b); }
+    else if (act === "retry-noreason") { await retryAssistant("without_reasoning"); }
+    else if (act === "retry-same") { await retryAssistant("same"); }
     else if (act === "regen") {
       if (state.streaming) return;
       const msgs = state.chat.messages; const last = msgs[msgs.length - 1];
-      if (last.role === "assistant") msgs.pop();
+      if (last && last.role === "assistant") msgs.pop();
       const model = $("#modelSelect").value;
-      await generate(model, await getCaps(model), { sources: last.sources || [] });
+      await generate(model, await getCaps(model), { sources: (last && last.sources) || [] });
     } else if (act === "continue") {
       if (state.streaming) return;
       const model = $("#modelSelect").value; await generate(model, await getCaps(model), { followup: true });
@@ -902,6 +997,16 @@ function bindViewport() {
   if (phoneQuery.addEventListener) phoneQuery.addEventListener("change", syncPhoneLayout);
   else if (phoneQuery.addListener) phoneQuery.addListener(syncPhoneLayout);
   let status = null;
+  try {
+    const health = await api("/health");
+    state.limits = health.generation || DEFAULT_LIMITS;
+    state.version = health.version || "1.3";
+  } catch { state.limits = DEFAULT_LIMITS; state.version = "1.3"; }
+  const badge = $("#localBadge");
+  if (badge) {
+    badge.textContent = `● local · v${state.version}`;
+    badge.title = `LocalVault AI ${state.version}. Chats stay on this PC.`;
+  }
   try { status = await api("/lan/status"); } catch { status = null; }
   if (status && status.loopback === false && !status.paired) { showPairScreen(); return; }
   setupAccess(status);
